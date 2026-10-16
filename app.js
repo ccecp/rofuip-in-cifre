@@ -193,3 +193,82 @@ function review(){const s=SECTIONS[flash];app.innerHTML=`<div class="flash"><img
 function render(){if(view==="theory")theory();else if(view==="quiz")quiz();else review()}
 try{localStorage.removeItem("rofuip-cifre-progress");}catch(e){}
 render();
+
+
+// Lectură continuă în română, independentă de teste și de căutare.
+(() => {
+  const panel = document.createElement('section');
+  panel.className = 'audio-player';
+  panel.setAttribute('aria-label', 'Player audio în limba română');
+  panel.innerHTML = `<h2>Ascultă materialul în limba română</h2>
+    <p>Lectură integrală, cu trecere automată la tema următoare.</p>
+    <div class="audio-controls"><button type="button" id="audioPlay">▶ Redare</button><button type="button" id="audioPause" disabled>⏸ Pauză</button><button type="button" id="audioRestart">↺ De la început</button></div>
+    <div class="audio-settings"><label>Tema <select id="audioTopic"></select></label><label>Viteză <select id="audioRate"><option value="0.8">0,8×</option><option value="1" selected>1×</option><option value="1.15">1,15×</option><option value="1.3">1,3×</option></select></label><label>Voce în română <select id="audioVoice"></select></label></div>
+    <p id="audioStatus" role="status" aria-live="polite">Pregătit pentru redare.</p><progress id="audioProgress" value="0" max="1" aria-label="Progresul lecturii"></progress><p id="audioText" class="audio-text"></p>`;
+  document.querySelector('main').prepend(panel);
+  const style = document.createElement('style');
+  style.textContent = `.audio-player{margin:20px;padding:20px;background:#fff;border:1px solid #d8c8e5;border-radius:20px}.audio-player h2{margin:0;font-size:1.25rem;color:#5e337a}.audio-player p{margin:8px 0}.audio-controls,.audio-settings{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}.audio-controls button{padding:11px 16px;border:0;border-radius:10px;background:#6a3b7d;color:#fff;font:inherit;font-weight:700;cursor:pointer}.audio-controls button:disabled{opacity:.45;cursor:default}.audio-settings label{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.audio-settings select{padding:8px;border:1px solid #d8c8e5;border-radius:8px;max-width:100%;font:inherit}.audio-settings label:first-child{flex:1 1 100%}.audio-settings label:first-child select{flex:1;min-width:0}.audio-player progress{width:100%;height:12px;accent-color:#6a3b7d}.audio-text{padding:12px;background:#f5eff9;border-radius:10px;min-height:48px}.audio-player button:focus-visible,.audio-player select:focus-visible{outline:3px solid #e8b72c;outline-offset:3px}@media(max-width:650px){.audio-player{margin:12px;padding:15px}.audio-settings label{width:100%}}`;
+  document.head.append(style);
+  const el = id => document.getElementById(id);
+  const play = el('audioPlay'), pause = el('audioPause'), restart = el('audioRestart');
+  const topic = el('audioTopic'), rate = el('audioRate'), voiceSelect = el('audioVoice');
+  const status = el('audioStatus'), progress = el('audioProgress'), text = el('audioText');
+  if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
+    status.textContent = 'Acest browser nu permite lectura audio. Deschide pagina într-un browser care acceptă sinteza vocală.';
+    [play,pause,restart,topic,rate,voiceSelect].forEach(e => e.disabled = true);
+    return;
+  }
+  const synth = window.speechSynthesis, parts = [], starts = [];
+  // Expand only the spoken copy; the study text stays unchanged.
+  function spoken(value) {
+    return value.replace(/\bArt\./gi,'Articolul').replace(/\bart\./g,'articolul').replace(/\balin\./g,'alineatul')
+      .replace(/\b2\/3\b/g,'două treimi').replace(/\b1\/3\b/g,'o treime')
+      .replace(/(\d)[–-](\d)/g,'$1 până la $2').replace(/%/g,' la sută')
+      .replace(/\bCA\b/g,'consiliul de administrație').replace(/\bCES\b/g,'cerințe educaționale speciale')
+      .replace(/ore\/zi/g,'ore pe zi').replace(/ore\/săptămână/g,'ore pe săptămână').replace(/note\/an/g,'note pe an');
+  }
+  function add(value, section) {
+    // Short utterances avoid long-text cutoffs in browser speech engines.
+    const words = spoken(value).split(/\s+/); let chunk = '';
+    for (const word of words) { if (chunk.length + word.length > 190 && chunk) { parts.push({text:chunk,section});chunk=''; } chunk += (chunk?' ':'')+word; }
+    if (chunk) parts.push({text:chunk,section});
+  }
+  SECTIONS.forEach((s,i) => {
+    starts.push(parts.length);
+    const option = document.createElement('option');option.value=i;option.textContent=`${i+1}. ${s.title}`;topic.append(option);
+    add(`Tema ${i+1}. ${s.title}. ${s.article}.`, i);
+    s.facts.forEach(f => add(f, i));
+  });
+  let voices = [], index = 0, active = false, token = 0, utterance = null;
+  progress.max = parts.length;
+  function loadVoices() {
+    const selected=voiceSelect.value;
+    voices=synth.getVoices().filter(v=>/^ro(?:[-_]|$)/i.test(v.lang));
+    voiceSelect.replaceChildren();
+    const fallback=document.createElement('option');fallback.value='';fallback.textContent=voices.length?'Voce română automată':'Română — vocea disponibilă în browser';voiceSelect.append(fallback);
+    voices.forEach(v=>{const o=document.createElement('option');o.value=v.voiceURI;o.textContent=v.name;voiceSelect.append(o);});
+    if(voices.some(v=>v.voiceURI===selected))voiceSelect.value=selected;
+  }
+  loadVoices();synth.addEventListener('voiceschanged',loadVoices);
+  function buttons(){play.disabled=active;pause.disabled=!active;play.textContent=index>0&&index<parts.length?'▶ Continuă':'▶ Redare';}
+  function cancel(){token++;active=false;synth.cancel();utterance=null;buttons();}
+  function read(){
+    if(!active)return;
+    if(index>=parts.length){active=false;progress.value=parts.length;status.textContent='Lectură încheiată. Poți relua materialul de la început.';buttons();return;}
+    const part=parts[index], current=token;
+    topic.value=part.section;text.textContent=part.text;progress.value=index;
+    status.textContent=`Se citește tema ${part.section+1} din ${SECTIONS.length}: ${SECTIONS[part.section].title}`;
+    utterance=new SpeechSynthesisUtterance(part.text);utterance.lang='ro-RO';utterance.rate=Number(rate.value);utterance.volume=1;
+    const voice=voices.find(v=>v.voiceURI===voiceSelect.value)||voices[0];if(voice)utterance.voice=voice;
+    utterance.onend=()=>{if(current!==token||!active)return;index++;read();};
+    utterance.onerror=event=>{if(current!==token||!active)return;active=false;buttons();status.textContent='Redarea s-a oprit. Apasă Continuă pentru a reîncerca. Verifică dacă dispozitivul are o voce în limba română.';};
+    synth.speak(utterance);buttons();
+  }
+  function start(){if(index>=parts.length)index=0;cancel();active=true;read();}
+  play.onclick=start;
+  pause.onclick=()=>{cancel();status.textContent='Pauză. Continuă reia fraza curentă.';};
+  restart.onclick=()=>{cancel();index=0;progress.value=0;start();};
+  topic.onchange=()=>{const was=active;cancel();index=starts[Number(topic.value)];progress.value=index;text.textContent=parts[index].text;status.textContent='Tema selectată. Apasă Redare pentru a asculta.';if(was)start();};
+  [rate,voiceSelect].forEach(control=>control.onchange=()=>{if(active)start();});
+  window.addEventListener('pagehide',cancel);
+})();
